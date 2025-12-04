@@ -12,27 +12,42 @@ from app.services import MetadataFetchError, MetadataService
 from app.utils import normalize_url
 
 
+# Configure logging based on environment settings
+# Convert string log level ("info", "debug", etc.) to logging constant
 log_level = getattr(logging, settings.log_level.upper(), logging.INFO)
+
+# Set up logging format for production: timestamp, level, logger name, message
 logging.basicConfig(
     level=log_level,
     format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
 )
+
+# Create a logger specific to this API for better log filtering
 logger = logging.getLogger("metadata-api")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Manage application lifespan - startup and shutdown events"""
-    # Startup
+    """Manage application lifespan - startup and shutdown events
+    
+    This runs once when the app starts (before accepting requests)
+    and once when the app shuts down (after all requests complete)
+    """
+    # Startup: Connect to MongoDB and verify the connection works
     logger.info("Starting application...")
     try:
         db.connect_db()
         logger.info("Connected to MongoDB")
     except RuntimeError as exc:
+        # If we can't connect to the database, crash the app immediately
+        # (better to fail fast than serve requests with no database)
         logger.exception("MongoDB connection failed: %s", exc)
         raise
+    
+    # Yield control back to FastAPI to start serving requests
     yield
-    # Shutdown
+    
+    # Shutdown: Clean up database connection gracefully
     logger.info("Shutting down application...")
     db.close_db()
     logger.info("Closed MongoDB connection")
@@ -47,20 +62,23 @@ app = FastAPI(
 
 
 async def collect_metadata_background(url: str):
-    """
-    Background task to collect metadata for a URL
-    This runs asynchronously without blocking the response
+    """Background task to collect metadata for a URL
+    
+    This runs asynchronously without blocking the API response.
+    Used by the GET endpoint when a URL is requested but doesn't exist in the database.
+    The user gets an immediate 202 response, and we fetch metadata in the background.
     """
     try:
         logger.info("Background task: Collecting metadata for %s", url)
         
-        # Fetch metadata
+        # Fetch metadata from the target URL
         headers, cookies, page_source = await MetadataService.fetch_url_metadata(url)
         
-        # Create document
+        # Create a MongoDB document from the fetched data
         metadata_doc = MetadataService.create_metadata_document(url, headers, cookies, page_source)
         
-        # Store in database
+        # Store in database using upsert (insert if new, update if exists)
+        # This handles race conditions if multiple requests try to collect the same URL
         collection = db.get_collection()
         collection.update_one(
             {"url": url},
@@ -71,10 +89,13 @@ async def collect_metadata_background(url: str):
         logger.info("Background task: Successfully collected metadata for %s", url)
         
     except MetadataFetchError as exc:
+        # Network/HTTP error - log but don't crash (background task failure is non-fatal)
         logger.error("Background metadata fetch failed for %s: %s", url, exc)
     except RuntimeError as exc:
+        # Database error - log for investigation
         logger.error("Background metadata DB error for %s: %s", url, exc)
     except Exception as exc:  # noqa: BLE001
+        # Catch-all for unexpected errors in background tasks
         logger.exception("Unexpected background error for %s: %s", url, exc)
 
 
@@ -92,8 +113,10 @@ async def root():
 
 @app.post("/metadata", status_code=201)
 async def create_metadata(url_request: URLRequest):
-    """
-    POST endpoint to collect and store URL metadata
+    """POST endpoint to collect and store URL metadata
+    
+    This endpoint always fetches fresh metadata from the target URL.
+    If the URL already exists in the database, it refreshes the data.
     
     Args:
         url_request: Request body containing the URL
@@ -101,19 +124,28 @@ async def create_metadata(url_request: URLRequest):
     Returns:
         Success message with stored metadata info
     """
+    # Get the URL from the request and normalize it to prevent duplicates
+    # (e.g., https://Google.com/ becomes https://google.com)
     url_input = str(url_request.url)
     url = normalize_url(url_input)
     
     try:
+        # Check if this URL already exists in the database
         collection = db.get_collection()
         existing = collection.find_one({"url": url})
 
+        # Determine if this is a new collection or a refresh
         operation = "refresh" if existing else "collect"
         logger.info("%s metadata for %s", "Refreshing" if existing else "Collecting", url)
 
+        # Always fetch fresh metadata (even if record exists)
         headers, cookies, page_source = await MetadataService.fetch_url_metadata(url)
 
+        # Create a MongoDB document with the fresh data
         metadata_doc = MetadataService.create_metadata_document(url, headers, cookies, page_source)
+        
+        # Use update_one with upsert to either insert new or update existing record
+        # This ensures we always have the latest data in the database
         collection.update_one(
             {"url": url},
             {"$set": metadata_doc},
@@ -122,6 +154,7 @@ async def create_metadata(url_request: URLRequest):
 
         logger.info("Successfully %s metadata for %s", "refreshed" if existing else "stored", url)
 
+        # Build response with metadata statistics
         response_payload = {
             "message": "Metadata refreshed successfully" if existing else "Metadata collected and stored successfully",
             "url": url,
@@ -133,6 +166,7 @@ async def create_metadata(url_request: URLRequest):
             }
         }
 
+        # Return 200 for refresh, 201 for new record
         if existing:
             return JSONResponse(status_code=200, content=response_payload)
 
@@ -154,9 +188,11 @@ async def create_metadata(url_request: URLRequest):
 
 @app.get("/metadata")
 async def get_metadata(url: str, background_tasks: BackgroundTasks):
-    """
-    GET endpoint to retrieve URL metadata
-    If record doesn't exist, triggers background collection
+    """GET endpoint to retrieve URL metadata
+    
+    Two behaviors:
+    1. If metadata exists: Return it immediately (200 OK)
+    2. If metadata doesn't exist: Trigger background collection and return 202 Accepted
     
     Args:
         url: The URL to retrieve metadata for (query parameter)
@@ -166,17 +202,18 @@ async def get_metadata(url: str, background_tasks: BackgroundTasks):
         Metadata if exists, or message that collection has been triggered
     """
     try:
-        # Check if URL exists in database
+        # Look up the URL in the database
         collection = db.get_collection()
         existing = collection.find_one({"url": url})
         
         if existing:
-            # Record exists - return it
+            # Record exists - return it immediately
             logger.info(f"Found existing metadata for {url}")
             
-            # Remove MongoDB _id field for response
+            # Remove MongoDB's internal _id field (not useful for API consumers)
             existing.pop("_id", None)
             
+            # Return structured response using Pydantic model
             return URLMetadataResponse(
                 url=existing["url"],
                 headers=existing["headers"],
@@ -189,8 +226,11 @@ async def get_metadata(url: str, background_tasks: BackgroundTasks):
             # Record doesn't exist - trigger background collection
             logger.info(f"Record not found for {url}, triggering background collection")
             
+            # Add collection task to run after we return the response
+            # This allows the user to get a quick response while we fetch the data
             background_tasks.add_task(collect_metadata_background, url)
             
+            # Return 202 Accepted (request accepted but not yet completed)
             return JSONResponse(
                 status_code=202,
                 content={
@@ -210,19 +250,30 @@ async def get_metadata(url: str, background_tasks: BackgroundTasks):
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
+    """Health check endpoint for monitoring and load balancers
+    
+    Returns 200 if the service and database are healthy.
+    Returns 503 if the database is unreachable.
+    
+    Load balancers can use this to route traffic only to healthy instances.
+    """
     try:
-        # Check MongoDB connection
+        # Verify MongoDB connection is alive by sending a ping command
         client = db.connect_db()
         client.admin.command('ping')
+        
+        # Database is responding - service is healthy
         return {"status": "healthy", "database": "connected"}
+        
     except RuntimeError as exc:
+        # Database connection error - service is unhealthy
         logger.error("Database health check failed: %s", exc)
         return JSONResponse(
             status_code=503,
             content={"status": "unhealthy", "database": "disconnected", "error": str(exc)}
         )
     except Exception as e:
+        # Unexpected error during health check
         return JSONResponse(
             status_code=503,
             content={"status": "unhealthy", "database": "disconnected", "error": str(e)}
