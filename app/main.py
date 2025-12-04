@@ -9,6 +9,7 @@ from app.config import settings
 from app.database import db
 from app.models import URLMetadataResponse, URLRequest
 from app.services import MetadataFetchError, MetadataService
+from app.utils import normalize_url
 
 
 log_level = getattr(logging, settings.log_level.upper(), logging.INFO)
@@ -100,35 +101,29 @@ async def create_metadata(url_request: URLRequest):
     Returns:
         Success message with stored metadata info
     """
-    url = str(url_request.url)
+    url_input = str(url_request.url)
+    url = normalize_url(url_input)
     
     try:
-        # Check if URL already exists
         collection = db.get_collection()
         existing = collection.find_one({"url": url})
-        
-        if existing:
-            return JSONResponse(
-                status_code=200,
-                content={
-                    "message": "URL metadata already exists",
-                    "url": url,
-                    "collected_at": existing["collected_at"].isoformat()
-                }
-            )
-        
-        # Fetch metadata
-        logger.info(f"Collecting metadata for {url}")
+
+        operation = "refresh" if existing else "collect"
+        logger.info("%s metadata for %s", "Refreshing" if existing else "Collecting", url)
+
         headers, cookies, page_source = await MetadataService.fetch_url_metadata(url)
-        
-        # Create and store document
+
         metadata_doc = MetadataService.create_metadata_document(url, headers, cookies, page_source)
-        collection.insert_one(metadata_doc)
-        
-        logger.info(f"Successfully stored metadata for {url}")
-        
-        return {
-            "message": "Metadata collected and stored successfully",
+        collection.update_one(
+            {"url": url},
+            {"$set": metadata_doc},
+            upsert=True,
+        )
+
+        logger.info("Successfully %s metadata for %s", "refreshed" if existing else "stored", url)
+
+        response_payload = {
+            "message": "Metadata refreshed successfully" if existing else "Metadata collected and stored successfully",
             "url": url,
             "collected_at": metadata_doc["collected_at"].isoformat(),
             "stats": {
@@ -137,6 +132,11 @@ async def create_metadata(url_request: URLRequest):
                 "page_source_length": len(page_source)
             }
         }
+
+        if existing:
+            return JSONResponse(status_code=200, content=response_payload)
+
+        return response_payload
         
     except MetadataFetchError as exc:
         logger.warning("Metadata fetch failed for %s: %s", url, exc)

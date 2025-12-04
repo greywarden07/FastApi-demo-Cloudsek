@@ -22,7 +22,6 @@ class Database:
                 connectTimeoutMS=5_000,
                 maxPoolSize=50,
                 retryWrites=True,
-                tlsAllowInvalidCertificates=False,
             )
             cls.client.admin.command("ping")
             cls._ensure_indexes()
