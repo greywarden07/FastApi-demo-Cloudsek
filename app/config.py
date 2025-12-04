@@ -21,12 +21,10 @@ class Settings(BaseSettings):
     page_source_max_bytes: int = Field(default=500_000, alias="PAGE_SOURCE_MAX_BYTES", ge=1)
 
     model_config = SettingsConfigDict(
-        env_file=".env",  # Load from .env file if present
+        env_file=".env",  
         env_file_encoding="utf-8",
-        extra="ignore",  # Ignore extra env vars we don't care about
+        extra="ignore",  
         env_prefix="",
     )
 
-
-# Create a single global settings instance that will be imported throughout the app
 settings = Settings()

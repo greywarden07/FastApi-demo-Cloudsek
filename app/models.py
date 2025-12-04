@@ -18,11 +18,11 @@ class URLMetadata(BaseModel):
     This represents the structure of documents saved in the database.
     Pydantic validates the data types before we insert into MongoDB.
     """
-    url: str  # Normalized URL (lowercase domain, no trailing slash)
-    headers: Dict[str, str]  # HTTP response headers
-    cookies: Dict[str, str]  # Cookies from the response
-    page_source: str  # HTML content (truncated to max size)
-    collected_at: datetime = Field(default_factory=datetime.utcnow)  # Timestamp when metadata was collected
+    url: str  
+    headers: Dict[str, str]  
+    cookies: Dict[str, str] 
+    page_source: str  
+    collected_at: datetime = Field(default_factory=datetime.utcnow) 
     
 
 class URLMetadataResponse(BaseModel):
@@ -36,4 +36,4 @@ class URLMetadataResponse(BaseModel):
     cookies: Dict[str, str]
     page_source: str
     collected_at: datetime
-    message: Optional[str] = None  # Optional field for status messages
+    message: Optional[str] = None 

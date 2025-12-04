@@ -51,8 +51,8 @@ def test_post_metadata_success(client, mock_db, mock_metadata_service):
     assert "stats" in data
 
 
-def test_post_metadata_already_exists(client, mock_db):
-    """Test POST /metadata when URL already exists in database"""
+def test_post_metadata_already_exists(client, mock_db, mock_metadata_service):
+    """Test POST /metadata when URL already exists - should refresh the data"""
     
     # Mock database - existing record
     mock_db.find_one.return_value = {
@@ -63,14 +63,29 @@ def test_post_metadata_already_exists(client, mock_db):
         "collected_at": datetime.utcnow()
     }
     
+    # Mock metadata service to fetch fresh data
+    mock_metadata_service.fetch_url_metadata.return_value = (
+        {"content-type": "text/html"},
+        {"session": "new123"},
+        "<html>Updated Page</html>"
+    )
+    mock_metadata_service.create_metadata_document.return_value = {
+        "url": "https://example.com",
+        "headers": {"content-type": "text/html"},
+        "cookies": {"session": "new123"},
+        "page_source": "<html>Updated Page</html>",
+        "collected_at": datetime.utcnow()
+    }
+    
     response = client.post(
         "/metadata",
         json={"url": "https://example.com"}
     )
     
+    # Should return 200 (not 201) with refresh message
     assert response.status_code == 200
     data = response.json()
-    assert data["message"] == "URL metadata already exists"
+    assert data["message"] == "Metadata refreshed successfully"
 
 
 def test_post_metadata_invalid_url(client):

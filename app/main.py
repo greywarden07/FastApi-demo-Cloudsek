@@ -22,7 +22,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
 )
 
-# Create a logger specific to this API for better log filtering
+
 logger = logging.getLogger("metadata-api")
 
 
@@ -33,21 +33,20 @@ async def lifespan(app: FastAPI):
     This runs once when the app starts (before accepting requests)
     and once when the app shuts down (after all requests complete)
     """
-    # Startup: Connect to MongoDB and verify the connection works
+   
     logger.info("Starting application...")
     try:
         db.connect_db()
         logger.info("Connected to MongoDB")
     except RuntimeError as exc:
-        # If we can't connect to the database, crash the app immediately
-        # (better to fail fast than serve requests with no database)
+       
         logger.exception("MongoDB connection failed: %s", exc)
         raise
     
-    # Yield control back to FastAPI to start serving requests
+  
     yield
     
-    # Shutdown: Clean up database connection gracefully
+   
     logger.info("Shutting down application...")
     db.close_db()
     logger.info("Closed MongoDB connection")
@@ -71,10 +70,10 @@ async def collect_metadata_background(url: str):
     try:
         logger.info("Background task: Collecting metadata for %s", url)
         
-        # Fetch metadata from the target URL
+      
         headers, cookies, page_source = await MetadataService.fetch_url_metadata(url)
         
-        # Create a MongoDB document from the fetched data
+     
         metadata_doc = MetadataService.create_metadata_document(url, headers, cookies, page_source)
         
         # Store in database using upsert (insert if new, update if exists)
@@ -89,13 +88,13 @@ async def collect_metadata_background(url: str):
         logger.info("Background task: Successfully collected metadata for %s", url)
         
     except MetadataFetchError as exc:
-        # Network/HTTP error - log but don't crash (background task failure is non-fatal)
+     
         logger.error("Background metadata fetch failed for %s: %s", url, exc)
     except RuntimeError as exc:
-        # Database error - log for investigation
+    
         logger.error("Background metadata DB error for %s: %s", url, exc)
-    except Exception as exc:  # noqa: BLE001
-        # Catch-all for unexpected errors in background tasks
+    except Exception as exc:  
+       
         logger.exception("Unexpected background error for %s: %s", url, exc)
 
 
@@ -130,11 +129,11 @@ async def create_metadata(url_request: URLRequest):
     url = normalize_url(url_input)
     
     try:
-        # Check if this URL already exists in the database
+       
         collection = db.get_collection()
         existing = collection.find_one({"url": url})
 
-        # Determine if this is a new collection or a refresh
+       
         operation = "refresh" if existing else "collect"
         logger.info("%s metadata for %s", "Refreshing" if existing else "Collecting", url)
 
@@ -154,7 +153,7 @@ async def create_metadata(url_request: URLRequest):
 
         logger.info("Successfully %s metadata for %s", "refreshed" if existing else "stored", url)
 
-        # Build response with metadata statistics
+     
         response_payload = {
             "message": "Metadata refreshed successfully" if existing else "Metadata collected and stored successfully",
             "url": url,
@@ -166,7 +165,7 @@ async def create_metadata(url_request: URLRequest):
             }
         }
 
-        # Return 200 for refresh, 201 for new record
+   
         if existing:
             return JSONResponse(status_code=200, content=response_payload)
 
@@ -202,18 +201,17 @@ async def get_metadata(url: str, background_tasks: BackgroundTasks):
         Metadata if exists, or message that collection has been triggered
     """
     try:
-        # Look up the URL in the database
+      
         collection = db.get_collection()
         existing = collection.find_one({"url": url})
         
         if existing:
-            # Record exists - return it immediately
+          
             logger.info(f"Found existing metadata for {url}")
             
-            # Remove MongoDB's internal _id field (not useful for API consumers)
+           
             existing.pop("_id", None)
-            
-            # Return structured response using Pydantic model
+           
             return URLMetadataResponse(
                 url=existing["url"],
                 headers=existing["headers"],
@@ -223,14 +221,13 @@ async def get_metadata(url: str, background_tasks: BackgroundTasks):
             )
         
         else:
-            # Record doesn't exist - trigger background collection
+           
             logger.info(f"Record not found for {url}, triggering background collection")
             
-            # Add collection task to run after we return the response
-            # This allows the user to get a quick response while we fetch the data
+            
             background_tasks.add_task(collect_metadata_background, url)
             
-            # Return 202 Accepted (request accepted but not yet completed)
+           
             return JSONResponse(
                 status_code=202,
                 content={
@@ -258,22 +255,22 @@ async def health_check():
     Load balancers can use this to route traffic only to healthy instances.
     """
     try:
-        # Verify MongoDB connection is alive by sending a ping command
+        
         client = db.connect_db()
         client.admin.command('ping')
         
-        # Database is responding - service is healthy
+     
         return {"status": "healthy", "database": "connected"}
         
     except RuntimeError as exc:
-        # Database connection error - service is unhealthy
+       
         logger.error("Database health check failed: %s", exc)
         return JSONResponse(
             status_code=503,
             content={"status": "unhealthy", "database": "disconnected", "error": str(exc)}
         )
     except Exception as e:
-        # Unexpected error during health check
+      
         return JSONResponse(
             status_code=503,
             content={"status": "unhealthy", "database": "disconnected", "error": str(e)}

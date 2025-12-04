@@ -8,7 +8,7 @@ This document describes the improvements made to transform the basic metadata co
 ## 1. Configuration Hardening (`app/config.py`)
 
 ### What Changed
-We completely rewrote the configuration system to eliminate hardcoded values and load all settings from environment variables.
+I completely rewrote the configuration system to eliminate hardcoded values and load all settings from environment variables.
 
 ### Why This Matters
 - **Security**: Sensitive credentials (MongoDB URLs, connection strings) are no longer embedded in code
